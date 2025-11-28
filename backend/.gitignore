@@ -1,5 +1,5 @@
-node_modules/
-dist/
+backend/node_modules/
+backend/dist/
 .env
 .DS_Store
 npm-debug.log*
@@ -7,3 +7,5 @@ yarn-debug.log*
 yarn-error.log*
 package-lock.json
 pnpm-lock.yaml
+frontend/node_modules/
+frontend/dist/
