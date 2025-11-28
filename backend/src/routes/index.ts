@@ -4,6 +4,7 @@ import { authRouter } from "./auth.routes.js";
 import { addressRouter } from "./address.routes.js";
 import { productRouter } from "./product.routes.js";
 import { orderRouter } from "./order.routes.js";
+import { couponRouter } from "./coupon.routes.js";
 
 export const router = Router();
 
@@ -15,3 +16,4 @@ router.use("/auth", authRouter);
 router.use("/products", productRouter);
 router.use("/account/addresses", addressRouter);
 router.use("/orders", orderRouter);
+router.use("/coupons", couponRouter);

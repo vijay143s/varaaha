@@ -1,14 +1,84 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { PlusIcon } from "@heroicons/react/24/outline";
 
 import { apiClient } from "../api/client.js";
+import { pushToast } from "../components/toast-rack.js";
 import type { Product } from "../types/product.js";
+import { useCartStore } from "../store/cart-store.js";
 
 async function fetchProducts(): Promise<Product[]> {
   const response = await apiClient.get("/products", {
     params: { pageSize: 12 }
   });
   return response.data.data.items;
+}
+
+interface ProductCardProps {
+  product: Product;
+}
+
+function ProductCard({ product }: ProductCardProps): JSX.Element {
+  const addItem = useCartStore((state) => state.addItem);
+  const quantity = useCartStore((state) =>
+    state.items.find((item) => item.productId === product.id)?.quantity ?? 0
+  );
+
+  const handleAddToCart = () => {
+    addItem({
+      productId: product.id,
+      slug: product.slug,
+      name: product.name,
+      price: product.price,
+      unit: product.unit
+    });
+
+    const nextQuantity = quantity + 1;
+    pushToast({
+      type: "success",
+      message:
+        nextQuantity === 1
+          ? `${product.name} added to cart`
+          : `${product.name} quantity updated (${nextQuantity})`
+    });
+  };
+
+  const initials = useMemo(() => product.name.slice(0, 2).toUpperCase(), [product.name]);
+
+  return (
+    <article className="relative overflow-hidden rounded-3xl border border-white/5 bg-white/5 p-6 shadow-frost transition-transform hover:-translate-y-1">
+      <button
+        type="button"
+        aria-label="Add to cart"
+        onClick={handleAddToCart}
+        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-slate-950/60 text-white transition hover:border-brand-400 hover:bg-brand-500"
+      >
+        {quantity > 0 ? (
+          <span className="text-sm font-semibold">{quantity}</span>
+        ) : (
+          <PlusIcon className="h-5 w-5" aria-hidden="true" />
+        )}
+      </button>
+
+      <div className="space-y-6">
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-500/20 text-white">
+          {initials}
+        </div>
+        <div>
+          <h2 className="text-xl font-semibold text-white">{product.name}</h2>
+          <p className="mt-2 h-14 text-sm text-white/70 line-clamp-3">
+            {product.shortDescription ?? "Farm fresh dairy crafted for balanced nutrition."}
+          </p>
+        </div>
+        <div className="mt-6 flex items-center justify-between text-white">
+          <p className="text-lg font-semibold">₹{product.price.toFixed(2)}</p>
+          <span className="rounded-full border border-white/10 px-3 py-1 text-xs uppercase tracking-wide text-white/60">
+            {product.unit}
+          </span>
+        </div>
+      </div>
+    </article>
+  );
 }
 
 export function ProductsPage(): JSX.Element {
@@ -36,27 +106,7 @@ export function ProductsPage(): JSX.Element {
       </header>
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {data.map((product) => (
-          <Link
-            key={product.id}
-            to={`/products/${product.slug}`}
-            className="group relative overflow-hidden rounded-3xl border border-white/5 bg-white/5 p-6 shadow-frost transition-transform hover:-translate-y-1"
-          >
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-500/20 text-white">
-              {product.name.slice(0, 2)}
-            </div>
-            <h2 className="mt-6 text-xl font-semibold text-white group-hover:text-white">
-              {product.name}
-            </h2>
-            <p className="mt-2 h-14 text-sm text-white/70 line-clamp-3">
-              {product.shortDescription ?? "Farm fresh dairy crafted for balanced nutrition."}
-            </p>
-            <div className="mt-6 flex items-center justify-between text-white">
-              <p className="text-lg font-semibold">₹{product.price.toFixed(2)}</p>
-              <span className="rounded-full border border-white/10 px-3 py-1 text-xs uppercase tracking-wide text-white/60">
-                {product.unit}
-              </span>
-            </div>
-          </Link>
+          <ProductCard key={product.id} product={product} />
         ))}
       </div>
     </div>

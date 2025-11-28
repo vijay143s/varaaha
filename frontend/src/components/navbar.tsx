@@ -1,10 +1,11 @@
 import { Fragment } from "react";
 import { Disclosure, Menu, Transition } from "@headlessui/react";
-import { Bars3Icon, XMarkIcon } from "@heroicons/react/24/outline";
+import { Bars3Icon, ShoppingBagIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { Link, NavLink } from "react-router-dom";
 
 import { useAuth } from "../hooks/use-auth.js";
 import { ThemeToggle } from "./theme-toggle.js";
+import { useCartStore } from "../store/cart-store.js";
 
 const navigation = [
   { name: "Home", href: "/" },
@@ -18,6 +19,9 @@ function classNames(...classes: Array<string | boolean | undefined>): string {
 
 export function Navbar(): JSX.Element {
   const { isAuthenticated, user, logout } = useAuth();
+  const cartQuantity = useCartStore((state) =>
+    state.items.reduce((total, item) => total + item.quantity, 0)
+  );
 
   return (
     <Disclosure as="header" className="fixed inset-x-0 top-0 z-50 border-b border-white/5 backdrop-blur">
@@ -51,6 +55,18 @@ export function Navbar(): JSX.Element {
 
             <div className="flex items-center gap-3">
               <ThemeToggle />
+              <Link
+                to="/cart"
+                className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:border-brand-400 hover:bg-brand-500/20"
+              >
+                <ShoppingBagIcon className="h-5 w-5" aria-hidden="true" />
+                {cartQuantity > 0 && (
+                  <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-brand-500 px-1 text-xs font-semibold text-white shadow-neon-ring">
+                    {cartQuantity}
+                  </span>
+                )}
+                <span className="sr-only">View cart</span>
+              </Link>
               {isAuthenticated ? (
                 <Menu as="div" className="relative">
                   <Menu.Button className="flex items-center gap-2 rounded-full bg-white/5 px-3 py-2 text-sm text-white hover:bg-white/10">
@@ -127,12 +143,12 @@ export function Navbar(): JSX.Element {
 
           <Disclosure.Panel className="md:hidden">
             <nav className="space-y-1 px-4 pb-4 pt-2">
-              {navigation.map((item) => (
+                {navigation.map((item) => (
                 <Disclosure.Button
                   key={item.name}
                   as={NavLink}
                   to={item.href}
-                  className={({ isActive }) =>
+                    className={({ isActive }: { isActive: boolean }) =>
                     classNames(
                       "block rounded-lg px-3 py-2 text-base",
                       isActive ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5 hover:text-white"
@@ -142,6 +158,18 @@ export function Navbar(): JSX.Element {
                   {item.name}
                 </Disclosure.Button>
               ))}
+              <Disclosure.Button
+                as={NavLink}
+                to="/cart"
+                className={({ isActive }: { isActive: boolean }) =>
+                  classNames(
+                    "block rounded-lg px-3 py-2 text-base",
+                    isActive ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5 hover:text-white"
+                  )
+                }
+              >
+                Cart{cartQuantity > 0 ? ` (${cartQuantity})` : ""}
+              </Disclosure.Button>
               {!isAuthenticated && (
                 <div className="flex flex-col gap-2 pt-2">
                   <Link to="/signin" className="rounded-lg border border-white/10 px-3 py-2 text-white">

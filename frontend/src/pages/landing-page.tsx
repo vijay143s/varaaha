@@ -2,7 +2,11 @@ import { Link } from "react-router-dom";
 import { ArrowRightIcon } from "@heroicons/react/24/outline";
 import { motion } from "framer-motion";
 
+import { useAuth } from "../hooks/use-auth.js";
+
 export function LandingPage(): JSX.Element {
+  const { isAuthenticated } = useAuth();
+
   return (
     <div className="space-y-24">
       <section className="relative overflow-hidden rounded-3xl border border-white/5 bg-white/5 px-8 py-16 shadow-frost">
@@ -27,12 +31,14 @@ export function LandingPage(): JSX.Element {
                 Explore products
                 <ArrowRightIcon className="h-4 w-4" />
               </Link>
-              <Link
-                to="/signup"
-                className="inline-flex items-center gap-2 rounded-full border border-white/15 px-6 py-3 text-sm font-semibold text-white hover:border-white/40"
-              >
-                Start subscription
-              </Link>
+              {!isAuthenticated && (
+                <Link
+                  to="/signup"
+                  className="inline-flex items-center gap-2 rounded-full border border-white/15 px-6 py-3 text-sm font-semibold text-white hover:border-white/40"
+                >
+                  Start subscription
+                </Link>
+              )}
             </div>
           </motion.div>
           <motion.div

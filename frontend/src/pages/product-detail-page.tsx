@@ -8,6 +8,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { apiClient } from "../api/client.js";
 import { pushToast } from "../components/toast-rack.js";
 import { useAuth } from "../hooks/use-auth.js";
+import { useCartStore } from "../store/cart-store.js";
 import type { Address } from "../types/address.js";
 import type { Product } from "../types/product.js";
 
@@ -38,7 +39,7 @@ async function fetchProduct(slug: string): Promise<Product> {
 
 async function fetchAddresses(): Promise<Address[]> {
   try {
-    const response = await apiClient.get("/addresses");
+    const response = await apiClient.get("/account/addresses");
     return response.data.data ?? [];
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
@@ -89,6 +90,10 @@ export function ProductDetailPage(): JSX.Element {
   const location = useLocation();
   const { isAuthenticated } = useAuth();
   const [isDialogOpen, setDialogOpen] = useState(false);
+  const addItem = useCartStore((state) => state.addItem);
+  const cartQuantity = useCartStore((state) =>
+    state.items.find((item) => item.productId === product?.id)?.quantity ?? 0
+  );
 
   const {
     data: product,
@@ -186,6 +191,26 @@ export function ProductDetailPage(): JSX.Element {
   const closeDialog = () => {
     setDialogOpen(false);
     reset(createDefaultFormValues());
+  };
+
+  const handleAddToCart = () => {
+    if (!product) return;
+    addItem({
+      productId: product.id,
+      slug: product.slug,
+      name: product.name,
+      price: product.price,
+      unit: product.unit
+    });
+
+    const nextQuantity = cartQuantity + 1;
+    pushToast({
+      type: "success",
+      message:
+        nextQuantity === 1
+          ? `${product.name} added to cart`
+          : `${product.name} quantity updated (${nextQuantity})`
+    });
   };
 
   const onSchedule = handleSubmit(async (values) => {
@@ -382,6 +407,13 @@ export function ProductDetailPage(): JSX.Element {
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={handleAddToCart}
+                className="rounded-2xl border border-white/10 px-6 py-3 text-sm font-semibold text-white/80 hover:border-brand-400"
+              >
+                {cartQuantity > 0 ? `In cart · ${cartQuantity}` : "Add to cart"}
+              </button>
               <button
                 type="button"
                 onClick={handleOpenDialog}

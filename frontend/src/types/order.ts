@@ -23,9 +23,11 @@ export interface OrderSummary {
   paymentStatus: string;
   paymentMethod: string | null;
   subtotal: number;
+  discount: number;
   tax: number;
   shipping: number;
   total: number;
+  couponCode: string | null;
   placedAt: string | null;
   deliverySchedule: OrderDeliverySchedule | null;
   items: OrderItem[];

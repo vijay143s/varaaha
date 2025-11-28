@@ -21,6 +21,12 @@ export const createOrderSchema = z
   .object({
     items: z.array(orderItemSchema).nonempty(),
     paymentMethod: z.string().max(50).default("cash_on_delivery"),
+    couponCode: z
+      .string()
+      .trim()
+      .min(3)
+      .max(50)
+      .optional(),
     shippingAddressId: z.number().int().positive().optional(),
     billingAddressId: z.number().int().positive().optional(),
     shippingAddress: addressSchema.optional(),

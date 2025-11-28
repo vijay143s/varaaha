@@ -8,14 +8,11 @@ import type {
 } from "../schemas/order.schema.js";
 import type { AddressInput } from "../schemas/address.schema.js";
 import { generateOrderNumber } from "../utils/order-number.js";
-
-interface ProductPricingRow extends RowDataPacket {
-  id: number;
-  name: string;
-  price: number;
-  unit: string;
-  is_active: number;
-}
+import {
+  CouponError,
+  calculatePricing,
+  type PricingSummary
+} from "../services/pricing.service.js";
 
 interface OrderRow extends RowDataPacket {
   id: number;
@@ -33,6 +30,8 @@ interface OrderRow extends RowDataPacket {
   tax_amount: number;
   shipping_amount: number;
   total_amount: number;
+  discount_amount: number;
+  coupon_code: string | null;
   placed_at: Date;
   created_at: Date;
   updated_at: Date;
@@ -100,9 +99,11 @@ function mapOrderResponse(order: OrderRow, items: OrderItemRow[]) {
     paymentStatus: order.payment_status,
     paymentMethod: order.payment_method,
     subtotal: Number(order.subtotal_amount),
+  discount: Number(order.discount_amount ?? 0),
     tax: Number(order.tax_amount),
     shipping: Number(order.shipping_amount),
     total: Number(order.total_amount),
+  couponCode: order.coupon_code ?? null,
     placedAt: order.placed_at,
     deliverySchedule,
     items: items.map((item) => ({
@@ -184,50 +185,23 @@ export async function createOrder(
 
   const schedulePaused = isScheduled && payload.schedulePause ? 1 : 0;
 
-  const productIds = [...new Set(payload.items.map((item) => item.productId))];
-
   try {
-    const [productRows] = await pool.query<ProductPricingRow[]>(
-      `SELECT id, name, price, unit, is_active FROM products WHERE id IN (${productIds
-        .map(() => "?")
-        .join(", ")})`,
-      productIds
-    );
-
-    if (productRows.length !== productIds.length) {
-      res.status(400).json({ success: false, error: "One or more products not found" });
-      return;
-    }
-
-    const inactive = productRows.filter((row) => row.is_active === 0);
-    if (inactive.length > 0) {
-      res.status(400).json({ success: false, error: "Some products are inactive" });
-      return;
-    }
-
-    const productMap = new Map<number, ProductPricingRow>();
-    for (const row of productRows) {
-      productMap.set(row.id, row);
-    }
-
-    let subtotal = 0;
-    const itemsPayload = payload.items.map((item) => {
-      const product = productMap.get(item.productId);
-      if (!product) {
-        throw new Error("Product not found during calculation");
+    let pricing: PricingSummary;
+    try {
+      pricing = await calculatePricing(payload.items, payload.couponCode);
+    } catch (error) {
+      if (error instanceof CouponError) {
+        res.status(400).json({ success: false, error: error.message });
+        return;
       }
-      const lineTotal = Number(product.price) * item.quantity;
-      subtotal += lineTotal;
-      return {
-        product,
-        quantity: item.quantity,
-        total: lineTotal
-      };
-    });
+      throw error;
+    }
 
-    const taxAmount = 0;
-    const shippingAmount = 0;
-    const totalAmount = subtotal + taxAmount + shippingAmount;
+    const itemsPayload = pricing.items.map((item) => ({
+      product: item.product,
+      quantity: item.quantity,
+      total: item.lineTotal
+    }));
 
     const connection = await pool.getConnection();
     try {
@@ -263,12 +237,14 @@ export async function createOrder(
            status,
            payment_status,
            payment_method,
+           coupon_code,
            subtotal_amount,
+           discount_amount,
            tax_amount,
            shipping_amount,
            total_amount
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?, ?)`,
         [
           orderNumber,
           userId,
@@ -280,10 +256,12 @@ export async function createOrder(
           scheduleExceptDays,
           schedulePaused,
           payload.paymentMethod ?? "cash_on_delivery",
-          subtotal,
-          taxAmount,
-          shippingAmount,
-          totalAmount
+          pricing.coupon?.code ?? null,
+          pricing.subtotal,
+          pricing.discount,
+          pricing.tax,
+          pricing.shipping,
+          pricing.total
         ]
       );
 
@@ -312,13 +290,23 @@ export async function createOrder(
         itemsPayload.flatMap((item) => [item.product.id, item.quantity])
       );
 
+      if (pricing.coupon?.id) {
+        await connection.execute(
+          `UPDATE coupons SET times_redeemed = times_redeemed + 1 WHERE id = ?`,
+          [pricing.coupon.id]
+        );
+      }
+
       await connection.commit();
 
       res.status(201).json({
         success: true,
         data: {
           orderNumber,
-          totalAmount
+          totalAmount: pricing.total,
+          subtotal: pricing.subtotal,
+          discount: pricing.discount,
+          couponCode: pricing.coupon?.code ?? null
         }
       });
     } catch (error) {
@@ -345,7 +333,7 @@ export async function listMyOrders(
 
   try {
     const [orders] = await pool.query<OrderRow[]>(
-      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, subtotal_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
+      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
        FROM orders
        WHERE user_id = ?
        ORDER BY created_at DESC`,
@@ -399,7 +387,7 @@ export async function getOrderByNumber(
 
   try {
     const [orders] = await pool.query<OrderRow[]>(
-      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, subtotal_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at, user_id
+      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at, user_id
        FROM orders
        WHERE order_number = ?
        LIMIT 1`,
@@ -439,7 +427,7 @@ export async function adminListOrders(
 ): Promise<void> {
   try {
     const [orders] = await pool.query<OrderRow[]>(
-      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, subtotal_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
+      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
        FROM orders
        ORDER BY created_at DESC
        LIMIT 100`

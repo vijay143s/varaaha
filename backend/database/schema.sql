@@ -136,7 +136,9 @@ CREATE TABLE IF NOT EXISTS orders (
   status ENUM('pending','confirmed','processing','shipped','delivered','cancelled','refunded') NOT NULL DEFAULT 'pending',
   payment_status ENUM('pending','paid','failed','refunded') NOT NULL DEFAULT 'pending',
   payment_method VARCHAR(50) NULL,
+  coupon_code VARCHAR(50) NULL,
   subtotal_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   shipping_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   total_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -175,6 +177,24 @@ CREATE TABLE IF NOT EXISTS order_items (
   CONSTRAINT fk_order_items_product
     FOREIGN KEY (product_id) REFERENCES products(id)
     ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS coupons (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  code VARCHAR(50) NOT NULL,
+  description VARCHAR(255) NULL,
+  discount_type ENUM('percentage','amount') NOT NULL,
+  discount_value DECIMAL(10,2) NOT NULL,
+  min_subtotal DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  max_redemptions INT NULL,
+  times_redeemed INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  starts_at DATETIME NULL,
+  expires_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY ux_coupons_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Support tables ------------------------------------------------------------
