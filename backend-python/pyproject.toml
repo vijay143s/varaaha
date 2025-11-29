@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "varaaha-backend-fastapi"
+version = "0.1.0"
+description = "FastAPI port of the Varaaha backend"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.5"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
+sqlalchemy = "^2.0.35"
+asyncmy = "^0.2.9"
+pydantic = "^2.9.2"
+pydantic-settings = "^2.5.2"
+python-jose = "^3.3.0"
+bcrypt = "^4.1.3"
+python-multipart = "^0.0.9"
+httpx = "^0.27.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+pytest-asyncio = "^0.24.0"
+ruff = "^0.6.9"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
