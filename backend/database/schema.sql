@@ -122,6 +122,34 @@ CREATE TABLE IF NOT EXISTS addresses (
 
 -- Orders --------------------------------------------------------------------
 
+CREATE TABLE IF NOT EXISTS payment_transactions (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NOT NULL,
+  gateway ENUM('razorpay') NOT NULL,
+  status ENUM('created','pending','paid','failed','cancelled') NOT NULL DEFAULT 'created',
+  amount DECIMAL(10,2) NOT NULL,
+  amount_paise INT UNSIGNED NOT NULL,
+  currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+  razorpay_order_id VARCHAR(191) NULL,
+  razorpay_payment_id VARCHAR(191) NULL,
+  razorpay_signature VARCHAR(255) NULL,
+  receipt VARCHAR(191) NULL,
+  notes JSON NULL,
+  metadata JSON NULL,
+  error_code VARCHAR(64) NULL,
+  error_description VARCHAR(255) NULL,
+  order_id BIGINT UNSIGNED NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY ux_payment_razorpay_order (razorpay_order_id),
+  KEY ix_payment_transactions_user (user_id),
+  KEY ix_payment_transactions_order (order_id),
+  CONSTRAINT fk_payment_transactions_user
+    FOREIGN KEY (user_id) REFERENCES users(id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS orders (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_number VARCHAR(32) NOT NULL,
@@ -136,6 +164,7 @@ CREATE TABLE IF NOT EXISTS orders (
   status ENUM('pending','confirmed','processing','shipped','delivered','cancelled','refunded') NOT NULL DEFAULT 'pending',
   payment_status ENUM('pending','paid','failed','refunded') NOT NULL DEFAULT 'pending',
   payment_method VARCHAR(50) NULL,
+  payment_transaction_id BIGINT UNSIGNED NULL,
   coupon_code VARCHAR(50) NULL,
   subtotal_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -156,6 +185,9 @@ CREATE TABLE IF NOT EXISTS orders (
     ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT fk_orders_shipping_address
     FOREIGN KEY (shipping_address_id) REFERENCES addresses(id)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT fk_orders_payment_transaction
+    FOREIGN KEY (payment_transaction_id) REFERENCES payment_transactions(id)
     ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

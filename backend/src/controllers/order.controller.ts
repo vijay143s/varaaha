@@ -26,6 +26,7 @@ interface OrderRow extends RowDataPacket {
   status: string;
   payment_status: string;
   payment_method: string | null;
+  payment_transaction_id: number | null;
   subtotal_amount: number;
   tax_amount: number;
   shipping_amount: number;
@@ -37,6 +38,19 @@ interface OrderRow extends RowDataPacket {
   updated_at: Date;
   billing_address_id: number | null;
   shipping_address_id: number | null;
+}
+
+interface PaymentTransactionRow extends RowDataPacket {
+  id: number;
+  user_id: number;
+  gateway: string;
+  status: "created" | "pending" | "paid" | "failed" | "cancelled" | string;
+  amount: number;
+  amount_paise: number;
+  currency: string;
+  razorpay_order_id: string | null;
+  razorpay_payment_id: string | null;
+  order_id: number | null;
 }
 
 interface OrderItemRow extends RowDataPacket {
@@ -98,6 +112,7 @@ function mapOrderResponse(order: OrderRow, items: OrderItemRow[]) {
     status: order.status,
     paymentStatus: order.payment_status,
     paymentMethod: order.payment_method,
+    paymentTransactionId: order.payment_transaction_id,
     subtotal: Number(order.subtotal_amount),
   discount: Number(order.discount_amount ?? 0),
     tax: Number(order.tax_amount),
@@ -207,6 +222,71 @@ export async function createOrder(
     try {
       await connection.beginTransaction();
 
+      let paymentStatus: "pending" | "paid" | "failed" | "refunded" = "pending";
+      let paymentMethod = payload.paymentMethod ?? "cash_on_delivery";
+      let paymentTransactionId: number | null = null;
+
+      if (paymentMethod !== "cash_on_delivery") {
+        if (!payload.paymentTransactionId) {
+          await connection.rollback();
+          res.status(400).json({ success: false, error: "Payment transaction is required." });
+          return;
+        }
+
+        const [transactions] = await connection.execute<PaymentTransactionRow[]>(
+          `SELECT id, user_id, gateway, status, amount, amount_paise, currency, razorpay_order_id, razorpay_payment_id, order_id
+           FROM payment_transactions
+           WHERE id = ?
+           FOR UPDATE`,
+          [payload.paymentTransactionId]
+        );
+
+        if (transactions.length === 0) {
+          await connection.rollback();
+          res.status(400).json({ success: false, error: "Payment transaction not found." });
+          return;
+        }
+
+        const transaction = transactions[0];
+
+        if (transaction.user_id !== userId) {
+          await connection.rollback();
+          res.status(403).json({ success: false, error: "Forbidden" });
+          return;
+        }
+
+        if (transaction.gateway !== "razorpay") {
+          await connection.rollback();
+          res.status(400).json({ success: false, error: "Unsupported payment gateway." });
+          return;
+        }
+
+        if (transaction.status !== "paid") {
+          await connection.rollback();
+          res.status(400).json({ success: false, error: "Payment not captured yet." });
+          return;
+        }
+
+        if (transaction.order_id) {
+          await connection.rollback();
+          res.status(400).json({ success: false, error: "Payment transaction already used." });
+          return;
+        }
+
+        const amountDifference = Math.abs(Number(transaction.amount) - Number(pricing.total));
+        if (amountDifference > 0.5) {
+          await connection.rollback();
+          res.status(400).json({ success: false, error: "Payment amount mismatch." });
+          return;
+        }
+
+        paymentStatus = "paid";
+        paymentMethod = "razorpay";
+        paymentTransactionId = transaction.id;
+      } else {
+        paymentMethod = "cash_on_delivery";
+      }
+
       const shippingAddressId = await upsertAddress(
         userId,
         payload.shippingAddressId,
@@ -237,6 +317,7 @@ export async function createOrder(
            status,
            payment_status,
            payment_method,
+           payment_transaction_id,
            coupon_code,
            subtotal_amount,
            discount_amount,
@@ -244,7 +325,7 @@ export async function createOrder(
            shipping_amount,
            total_amount
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           orderNumber,
           userId,
@@ -255,7 +336,10 @@ export async function createOrder(
           scheduleEndDate,
           scheduleExceptDays,
           schedulePaused,
-          payload.paymentMethod ?? "cash_on_delivery",
+          "pending",
+          paymentStatus,
+          paymentMethod,
+          paymentTransactionId,
           pricing.coupon?.code ?? null,
           pricing.subtotal,
           pricing.discount,
@@ -266,6 +350,15 @@ export async function createOrder(
       );
 
       const orderId = orderResult.insertId;
+
+      if (paymentTransactionId) {
+        await connection.execute(
+          `UPDATE payment_transactions
+           SET order_id = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [orderId, paymentTransactionId]
+        );
+      }
 
       const orderItemValues = itemsPayload.map((item) => [
         orderId,
@@ -333,7 +426,7 @@ export async function listMyOrders(
 
   try {
     const [orders] = await pool.query<OrderRow[]>(
-      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
+  `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, payment_transaction_id, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
        FROM orders
        WHERE user_id = ?
        ORDER BY created_at DESC`,
@@ -387,7 +480,7 @@ export async function getOrderByNumber(
 
   try {
     const [orders] = await pool.query<OrderRow[]>(
-      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at, user_id
+  `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, payment_transaction_id, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at, user_id
        FROM orders
        WHERE order_number = ?
        LIMIT 1`,
@@ -427,7 +520,7 @@ export async function adminListOrders(
 ): Promise<void> {
   try {
     const [orders] = await pool.query<OrderRow[]>(
-      `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
+  `SELECT id, order_number, order_type, schedule_start_date, schedule_end_date, schedule_except_days, schedule_paused, status, payment_status, payment_method, payment_transaction_id, coupon_code, subtotal_amount, discount_amount, tax_amount, shipping_amount, total_amount, placed_at, created_at, updated_at
        FROM orders
        ORDER BY created_at DESC
        LIMIT 100`

@@ -12,6 +12,18 @@ import { apiClient } from "../api/client.js";
 import { useAuth } from "../hooks/use-auth.js";
 import type { Address } from "../types/address.js";
 
+declare global {
+  interface Window {
+    Razorpay?: new (options: Record<string, unknown>) => RazorpayInstance;
+  }
+
+  interface RazorpayInstance {
+    open: () => void;
+    close: () => void;
+    on: (event: string, handler: (response: any) => void) => void;
+  }
+}
+
 const WEEKDAY_OPTIONS = [
   "monday",
   "tuesday",
@@ -49,6 +61,19 @@ interface AppliedCouponState {
   signature: string;
 }
 
+const PAYMENT_METHOD_OPTIONS = [
+  {
+    value: "cash_on_delivery" as const,
+    title: "Cash on delivery",
+    description: "Pay the delivery partner with cash or UPI when you receive your order."
+  },
+  {
+    value: "razorpay" as const,
+    title: "Pay online (UPI/cards)",
+    description: "Complete a secure Razorpay payment before placing the order."
+  }
+];
+
 const createDefaultFormValues = (): DeliveryFormValues => {
   const todayIso = new Date().toISOString().slice(0, 10);
   return {
@@ -79,6 +104,21 @@ async function fetchAddresses(): Promise<Address[]> {
   }
 }
 
+async function loadRazorpayCheckout(): Promise<boolean> {
+  if (window.Razorpay) {
+    return true;
+  }
+
+  return new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+}
+
 export function CartPage(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
@@ -87,11 +127,15 @@ export function CartPage(): JSX.Element {
   const decrement = useCartStore((state) => state.decrement);
   const remove = useCartStore((state) => state.remove);
   const clear = useCartStore((state) => state.clear);
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const [isDialogOpen, setDialogOpen] = useState(false);
   const [selectedAddressId, setSelectedAddressId] = useState<number | "new" | null>(null);
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [appliedCoupon, setAppliedCoupon] = useState<AppliedCouponState | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<"cash_on_delivery" | "razorpay">(
+    "cash_on_delivery"
+  );
+  const [isProcessingPayment, setProcessingPayment] = useState(false);
   const queryClient = useQueryClient();
 
   const cartSignature = useMemo(
@@ -165,6 +209,38 @@ export function CartPage(): JSX.Element {
         ? error.response?.data?.error ?? "Unable to apply coupon."
         : "Unable to apply coupon.";
       pushToast({ type: "error", message });
+    }
+  });
+
+  const createRazorpayOrderMutation = useMutation({
+    mutationFn: async (payload: {
+      items: Array<{ productId: number; quantity: number }>;
+      couponCode?: string;
+    }) => {
+      const response = await apiClient.post("/payments/razorpay/order", payload);
+      return response.data.data as {
+        transactionId: number;
+        razorpayOrderId: string;
+        currency: string;
+        amount: number;
+        amountPaise: number;
+        keyId: string | null;
+      };
+    }
+  });
+
+  const confirmRazorpayPaymentMutation = useMutation({
+    mutationFn: async (payload: {
+      transactionId: number;
+      razorpayOrderId: string;
+      razorpayPaymentId: string;
+      razorpaySignature: string;
+    }) => {
+      const response = await apiClient.post("/payments/razorpay/confirm", payload);
+      return response.data.data as {
+        transactionId: number;
+        amount: number;
+      };
     }
   });
 
@@ -253,6 +329,8 @@ export function CartPage(): JSX.Element {
     }
     reset(createDefaultFormValues());
     setSelectedAddressId(null);
+    setProcessingPayment(false);
+    setPaymentMethod("cash_on_delivery");
     setDialogOpen(true);
   };
 
@@ -260,6 +338,8 @@ export function CartPage(): JSX.Element {
     setDialogOpen(false);
     reset(createDefaultFormValues());
     setSelectedAddressId(null);
+    setProcessingPayment(false);
+    setPaymentMethod("cash_on_delivery");
   };
 
   const toggleOrderType = (type: OrderTypeOption) => {
@@ -305,6 +385,9 @@ export function CartPage(): JSX.Element {
       country: "India"
     };
 
+    let shippingAddressIdForOrder: number | undefined;
+    let billingAddressIdForOrder: number | undefined;
+
     if (!requiresManualAddress && typeof selectedAddressId === "number") {
       const selected = addresses.find((address) => address.id === selectedAddressId);
       if (!selected) {
@@ -321,6 +404,8 @@ export function CartPage(): JSX.Element {
         postalCode: selected.postalCode,
         country: selected.country ?? "India"
       };
+      shippingAddressIdForOrder = selected.id;
+      billingAddressIdForOrder = selected.id;
     }
 
     if (!addressPayload.phone || !/^[0-9+\-\s]{8,15}$/.test(addressPayload.phone)) {
@@ -345,16 +430,28 @@ export function CartPage(): JSX.Element {
     }
 
     try {
+      const orderItemsPayload = items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity
+      }));
+
       const payload: Record<string, unknown> = {
         orderType: values.orderType,
-        items: items.map((item) => ({
-          productId: item.productId,
-          quantity: item.quantity
-        })),
-        paymentMethod: "cash_on_delivery",
-        shippingAddress: addressPayload,
-        billingAddress: addressPayload
+        items: orderItemsPayload,
+        paymentMethod
       };
+
+      if (shippingAddressIdForOrder) {
+        payload.shippingAddressId = shippingAddressIdForOrder;
+      } else {
+        payload.shippingAddress = addressPayload;
+      }
+
+      if (billingAddressIdForOrder) {
+        payload.billingAddressId = billingAddressIdForOrder;
+      } else {
+        payload.billingAddress = addressPayload;
+      }
 
       const trimmedCoupon = couponCodeInput.trim() || appliedCoupon?.code || "";
       if (trimmedCoupon) {
@@ -370,21 +467,115 @@ export function CartPage(): JSX.Element {
         payload.schedulePause = values.schedulePause;
       }
 
-      const response = await apiClient.post("/orders", payload);
-      const { orderNumber } = response.data.data;
+      const finalizeOrder = async (orderPayload: Record<string, unknown>) => {
+        const response = await apiClient.post("/orders", orderPayload);
+        const { orderNumber } = response.data.data;
 
-      pushToast({
-        type: "success",
-        message:
-          values.orderType === "scheduled"
-            ? "Recurring delivery plan created!"
-            : "Order placed successfully!"
-      });
-      clear();
-      setAppliedCoupon(null);
-      setCouponCodeInput("");
-      closeDialog();
-      navigate(`/orders?focus=${orderNumber}`);
+        pushToast({
+          type: "success",
+          message:
+            values.orderType === "scheduled"
+              ? "Recurring delivery plan created!"
+              : "Order placed successfully!"
+        });
+        clear();
+        setAppliedCoupon(null);
+        setCouponCodeInput("");
+        setPaymentMethod("cash_on_delivery");
+        closeDialog();
+        navigate(`/orders?focus=${orderNumber}`);
+      };
+
+      if (paymentMethod === "razorpay") {
+        const couponCodeForPayment = trimmedCoupon || undefined;
+
+        try {
+          setProcessingPayment(true);
+          const paymentInit = await createRazorpayOrderMutation.mutateAsync({
+            items: orderItemsPayload,
+            couponCode: couponCodeForPayment
+          });
+
+          if (!paymentInit.keyId) {
+            throw new Error("Payment gateway misconfigured. Contact support.");
+          }
+
+          const scriptReady = await loadRazorpayCheckout();
+          if (!scriptReady || !window.Razorpay) {
+            throw new Error("Unable to load payment window. Please try again.");
+          }
+
+          const checkoutResult = await new Promise<{
+            paymentId: string;
+            orderId: string;
+            signature: string;
+          }>((resolve, reject) => {
+            const instance = new window.Razorpay!({
+              key: paymentInit.keyId,
+              amount: paymentInit.amountPaise,
+              currency: paymentInit.currency,
+              name: "Varaaha Milk",
+              description: "Order payment",
+              order_id: paymentInit.razorpayOrderId,
+              notes: {
+                transactionId: String(paymentInit.transactionId)
+              },
+              prefill: {
+                name: addressPayload.fullName || user?.fullName || "",
+                email: user?.email || "",
+                contact: addressPayload.phone || user?.phone || ""
+              },
+              theme: {
+                color: "#0f172a"
+              },
+              handler: (response: any) => {
+                resolve({
+                  paymentId: response.razorpay_payment_id,
+                  orderId: response.razorpay_order_id,
+                  signature: response.razorpay_signature
+                });
+              },
+              modal: {
+                ondismiss: () => {
+                  reject(new Error("Payment cancelled."));
+                }
+              }
+            });
+
+            instance.on("payment.failed", (response: any) => {
+              reject(new Error(response?.error?.description ?? "Payment failed."));
+            });
+
+            instance.open();
+          });
+
+          const confirmation = await confirmRazorpayPaymentMutation.mutateAsync({
+            transactionId: paymentInit.transactionId,
+            razorpayOrderId: checkoutResult.orderId,
+            razorpayPaymentId: checkoutResult.paymentId,
+            razorpaySignature: checkoutResult.signature
+          });
+
+          payload.paymentTransactionId = confirmation.transactionId;
+          payload.paymentMethod = "razorpay";
+
+          await finalizeOrder(payload);
+        } catch (error) {
+          const message = axios.isAxiosError(error)
+            ? error.response?.data?.error ?? "Payment could not be completed."
+            : error instanceof Error
+              ? error.message
+              : "Payment could not be completed.";
+          pushToast({ type: "error", message });
+        } finally {
+          setProcessingPayment(false);
+        }
+
+        return;
+      }
+
+      payload.paymentMethod = "cash_on_delivery";
+      await finalizeOrder(payload);
     } catch (error) {
       const message = axios.isAxiosError(error)
         ? error.response?.data?.error ?? "Unable to process order."
@@ -399,6 +590,22 @@ export function CartPage(): JSX.Element {
   const discountAmount = appliedCoupon?.discountAmount ?? 0;
   const estimatedTotal = appliedCoupon?.total ?? effectiveSubtotal;
   const hasAppliedCoupon = Boolean(appliedCoupon && discountAmount > 0);
+  const isOnlinePayment = paymentMethod === "razorpay";
+  const isPaymentMutationPending =
+    createRazorpayOrderMutation.isPending || confirmRazorpayPaymentMutation.isPending;
+  const isCheckoutBusy =
+    isSubmitting ||
+    loadingAddresses ||
+    createAddressMutation.isPending ||
+    isProcessingPayment ||
+    isPaymentMutationPending;
+  const submitLabel = isCheckoutBusy
+    ? isOnlinePayment
+      ? "Finishing payment…"
+      : "Processing…"
+    : isOnlinePayment
+      ? "Pay & place order"
+      : "Confirm order";
 
   if (items.length === 0) {
     return (
@@ -419,7 +626,7 @@ export function CartPage(): JSX.Element {
     <div className="space-y-8">
       <header className="space-y-2">
         <h1 className="text-3xl font-semibold text-white">Your cart</h1>
-  <p className="text-white/60">Review items before completing checkout.</p>
+        <p className="text-white/60">Review items before completing checkout.</p>
       </header>
 
       <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
@@ -936,6 +1143,42 @@ export function CartPage(): JSX.Element {
                       )}
                     </section>
 
+                    <section className="space-y-4 rounded-2xl border border-white/10 bg-slate-900/40 p-4">
+                      <p className="text-sm font-medium text-white">Payment method</p>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {PAYMENT_METHOD_OPTIONS.map((method) => {
+                          const isSelected = paymentMethod === method.value;
+                          return (
+                            <button
+                              type="button"
+                              key={method.value}
+                              onClick={() => setPaymentMethod(method.value)}
+                              className={`rounded-2xl border px-4 py-3 text-left text-sm transition ${
+                                isSelected
+                                  ? "border-brand-400 bg-brand-500/10 text-white"
+                                  : "border-white/15 bg-slate-900/60 text-white/70 hover:border-white/30"
+                              }`}
+                              disabled={isProcessingPayment || createRazorpayOrderMutation.isPending || confirmRazorpayPaymentMutation.isPending}
+                            >
+                              <span className="block font-semibold">{method.title}</span>
+                              <span className="mt-1 block text-xs text-white/60">{method.description}</span>
+                              {method.value === "razorpay" && (
+                                <span className="mt-2 inline-flex rounded-full border border-brand-400/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-brand-200">
+                                  UPI · Card · Netbanking
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {paymentMethod === "razorpay" && (
+                        <p className="text-xs text-white/60">
+                          You will be redirected to Razorpay to complete the payment. Your order will be
+                          confirmed automatically after a successful payment.
+                        </p>
+                      )}
+                    </section>
+
                     <div className="flex flex-wrap items-center justify-end gap-3">
                       <button
                         type="button"
@@ -946,16 +1189,10 @@ export function CartPage(): JSX.Element {
                       </button>
                       <button
                         type="submit"
-                        disabled={
-                          isSubmitting ||
-                          loadingAddresses ||
-                          createAddressMutation.isPending
-                        }
+                        disabled={isCheckoutBusy}
                         className="rounded-2xl bg-brand-500 px-6 py-3 text-sm font-semibold text-white shadow-neon-ring disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {isSubmitting || createAddressMutation.isPending
-                          ? "Processing…"
-                          : "Confirm order"}
+                        {submitLabel}
                       </button>
                     </div>
                   </form>

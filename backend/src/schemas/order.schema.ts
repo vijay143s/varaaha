@@ -20,7 +20,8 @@ const weekdayEnum = z.enum([
 export const createOrderSchema = z
   .object({
     items: z.array(orderItemSchema).nonempty(),
-    paymentMethod: z.string().max(50).default("cash_on_delivery"),
+  paymentMethod: z.string().max(50).default("cash_on_delivery"),
+  paymentTransactionId: z.number().int().positive().optional(),
     couponCode: z
       .string()
       .trim()
@@ -41,6 +42,24 @@ export const createOrderSchema = z
   .refine((data) => data.shippingAddressId || data.shippingAddress, {
     message: "Shipping address is required",
     path: ["shippingAddress"]
+  })
+  .refine((data) => {
+    if (!data.paymentMethod || data.paymentMethod === "cash_on_delivery") {
+      return true;
+    }
+    return Boolean(data.paymentTransactionId);
+  }, {
+    message: "Payment transaction is required for online payments",
+    path: ["paymentTransactionId"]
+  })
+  .refine((data) => {
+    if (data.paymentMethod === "cash_on_delivery" && data.paymentTransactionId) {
+      return false;
+    }
+    return true;
+  }, {
+    message: "Payment transaction should not be sent for cash on delivery orders",
+    path: ["paymentTransactionId"]
   })
   .refine((data) => {
     if (data.orderType === "scheduled") {
