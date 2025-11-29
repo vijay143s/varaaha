@@ -11,6 +11,7 @@ import {
   verifyRazorpaySignature
 } from "../services/razorpay.service.js";
 import type {
+  CancelRazorpayPaymentInput,
   ConfirmRazorpayPaymentInput,
   CreateRazorpayPaymentInput
 } from "../schemas/payment.schema.js";
@@ -26,6 +27,7 @@ interface PaymentTransactionRow extends RowDataPacket {
   razorpay_order_id: string | null;
   razorpay_payment_id: string | null;
   razorpay_signature: string | null;
+  order_id?: number | null;
 }
 
 function parseUserId(req: Request): number | null {
@@ -249,6 +251,102 @@ export async function confirmRazorpayPayment(
         transactionId: transaction.id,
         amount: transaction.amount
       }
+    });
+  } catch (error) {
+    await connection.rollback();
+    next(error);
+  } finally {
+    connection.release();
+  }
+}
+
+export async function cancelRazorpayPayment(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  const userId = parseUserId(req);
+  if (!userId) {
+    res.status(401).json({ success: false, error: "Unauthorized" });
+    return;
+  }
+
+  const payload = req.body as CancelRazorpayPaymentInput;
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [rows] = await connection.execute<PaymentTransactionRow[]>(
+      `SELECT id, user_id, gateway, status, amount, amount_paise, currency, razorpay_order_id, razorpay_payment_id, razorpay_signature, order_id
+       FROM payment_transactions
+       WHERE id = ?
+       FOR UPDATE`,
+      [payload.transactionId]
+    );
+
+    if (rows.length === 0) {
+      await connection.rollback();
+      res.status(404).json({ success: false, error: "Payment transaction not found." });
+      return;
+    }
+
+    const transaction = rows[0];
+
+    if (transaction.user_id !== userId) {
+      await connection.rollback();
+      res.status(403).json({ success: false, error: "Forbidden" });
+      return;
+    }
+
+    if (transaction.gateway !== "razorpay") {
+      await connection.rollback();
+      res.status(400).json({ success: false, error: "Invalid payment gateway." });
+      return;
+    }
+
+    if (transaction.order_id) {
+      await connection.rollback();
+      res.status(409).json({ success: false, error: "Payment already linked to an order." });
+      return;
+    }
+
+    if (transaction.status === "paid") {
+      await connection.rollback();
+      res.status(409).json({ success: false, error: "Captured payments cannot be cancelled." });
+      return;
+    }
+
+    if (transaction.status === "cancelled") {
+      await connection.commit();
+      res.json({
+        success: true,
+        data: { transactionId: transaction.id, status: transaction.status }
+      });
+      return;
+    }
+
+    if (transaction.status === "failed") {
+      await connection.commit();
+      res.json({
+        success: true,
+        data: { transactionId: transaction.id, status: transaction.status }
+      });
+      return;
+    }
+
+    await connection.execute(
+      `UPDATE payment_transactions
+       SET status = 'cancelled', error_code = 'user_cancelled', error_description = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [payload.reason ?? "Payment cancelled by user", transaction.id]
+    );
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      data: { transactionId: transaction.id, status: "cancelled" }
     });
   } catch (error) {
     await connection.rollback();

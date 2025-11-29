@@ -1,9 +1,14 @@
 import { Router } from "express";
 
-import { confirmRazorpayPayment, initiateRazorpayPayment } from "../controllers/payment.controller.js";
+import {
+  cancelRazorpayPayment,
+  confirmRazorpayPayment,
+  initiateRazorpayPayment
+} from "../controllers/payment.controller.js";
 import { authenticated } from "../middleware/authenticated.js";
 import { validateRequest } from "../middleware/validate-request.js";
 import {
+  cancelRazorpayPaymentSchema,
   confirmRazorpayPaymentSchema,
   createRazorpayPaymentSchema
 } from "../schemas/payment.schema.js";
@@ -21,4 +26,9 @@ paymentRouter.post(
   "/razorpay/confirm",
   validateRequest(confirmRazorpayPaymentSchema),
   confirmRazorpayPayment
+);
+paymentRouter.post(
+  "/razorpay/cancel",
+  validateRequest(cancelRazorpayPaymentSchema),
+  cancelRazorpayPayment
 );

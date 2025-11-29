@@ -244,6 +244,16 @@ export function CartPage(): JSX.Element {
     }
   });
 
+  const cancelRazorpayPaymentMutation = useMutation({
+    mutationFn: async (payload: { transactionId: number; reason?: string }) => {
+      const response = await apiClient.post("/payments/razorpay/cancel", payload);
+      return response.data.data as {
+        transactionId: number;
+        status: string;
+      };
+    }
+  });
+
   const {
     register,
     handleSubmit,
@@ -488,15 +498,30 @@ export function CartPage(): JSX.Element {
 
       if (paymentMethod === "razorpay") {
         const couponCodeForPayment = trimmedCoupon || undefined;
+        let paymentInit: {
+          transactionId: number;
+          razorpayOrderId: string;
+          currency: string;
+          amount: number;
+          amountPaise: number;
+          keyId: string | null;
+        } | null = null;
+
+        setProcessingPayment(true);
 
         try {
-          setProcessingPayment(true);
-          const paymentInit = await createRazorpayOrderMutation.mutateAsync({
+          paymentInit = await createRazorpayOrderMutation.mutateAsync({
             items: orderItemsPayload,
             couponCode: couponCodeForPayment
           });
 
-          if (!paymentInit.keyId) {
+          if (!paymentInit) {
+            throw new Error("Payment could not be initialised.");
+          }
+
+          const activePayment = paymentInit;
+
+          if (!activePayment.keyId) {
             throw new Error("Payment gateway misconfigured. Contact support.");
           }
 
@@ -511,14 +536,14 @@ export function CartPage(): JSX.Element {
             signature: string;
           }>((resolve, reject) => {
             const instance = new window.Razorpay!({
-              key: paymentInit.keyId,
-              amount: paymentInit.amountPaise,
-              currency: paymentInit.currency,
+              key: activePayment.keyId,
+              amount: activePayment.amountPaise,
+              currency: activePayment.currency,
               name: "Varaaha Milk",
               description: "Order payment",
-              order_id: paymentInit.razorpayOrderId,
+              order_id: activePayment.razorpayOrderId,
               notes: {
-                transactionId: String(paymentInit.transactionId)
+                transactionId: String(activePayment.transactionId)
               },
               prefill: {
                 name: addressPayload.fullName || user?.fullName || "",
@@ -550,7 +575,7 @@ export function CartPage(): JSX.Element {
           });
 
           const confirmation = await confirmRazorpayPaymentMutation.mutateAsync({
-            transactionId: paymentInit.transactionId,
+            transactionId: activePayment.transactionId,
             razorpayOrderId: checkoutResult.orderId,
             razorpayPaymentId: checkoutResult.paymentId,
             razorpaySignature: checkoutResult.signature
@@ -561,12 +586,35 @@ export function CartPage(): JSX.Element {
 
           await finalizeOrder(payload);
         } catch (error) {
-          const message = axios.isAxiosError(error)
+          const resolvedMessage = axios.isAxiosError(error)
             ? error.response?.data?.error ?? "Payment could not be completed."
             : error instanceof Error
               ? error.message
               : "Payment could not be completed.";
-          pushToast({ type: "error", message });
+          const isCancelled =
+            error instanceof Error && error.message.toLowerCase().includes("cancelled");
+
+          if (isCancelled && paymentInit) {
+            try {
+              const reason = "Customer cancelled Razorpay checkout.";
+              await cancelRazorpayPaymentMutation.mutateAsync({
+                transactionId: paymentInit.transactionId,
+                reason
+              });
+            } catch (cancelError) {
+              console.error("Failed to cancel Razorpay transaction", cancelError);
+            }
+          }
+
+          const toastMessage = isCancelled
+            ? "Payment cancelled. Order not placed."
+            : resolvedMessage;
+
+          pushToast({ type: "error", message: toastMessage });
+
+          if (isCancelled) {
+            closeDialog();
+          }
         } finally {
           setProcessingPayment(false);
         }
@@ -592,7 +640,9 @@ export function CartPage(): JSX.Element {
   const hasAppliedCoupon = Boolean(appliedCoupon && discountAmount > 0);
   const isOnlinePayment = paymentMethod === "razorpay";
   const isPaymentMutationPending =
-    createRazorpayOrderMutation.isPending || confirmRazorpayPaymentMutation.isPending;
+    createRazorpayOrderMutation.isPending ||
+    confirmRazorpayPaymentMutation.isPending ||
+    cancelRazorpayPaymentMutation.isPending;
   const isCheckoutBusy =
     isSubmitting ||
     loadingAddresses ||
@@ -1158,7 +1208,7 @@ export function CartPage(): JSX.Element {
                                   ? "border-brand-400 bg-brand-500/10 text-white"
                                   : "border-white/15 bg-slate-900/60 text-white/70 hover:border-white/30"
                               }`}
-                              disabled={isProcessingPayment || createRazorpayOrderMutation.isPending || confirmRazorpayPaymentMutation.isPending}
+                              disabled={isCheckoutBusy}
                             >
                               <span className="block font-semibold">{method.title}</span>
                               <span className="mt-1 block text-xs text-white/60">{method.description}</span>

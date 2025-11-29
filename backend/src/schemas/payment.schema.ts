@@ -22,5 +22,16 @@ export const confirmRazorpayPaymentSchema = z.object({
   razorpaySignature: z.string().min(10)
 });
 
+export const cancelRazorpayPaymentSchema = z.object({
+  transactionId: z.number().int().positive(),
+  reason: z
+    .string()
+    .trim()
+    .min(3)
+    .max(200)
+    .optional()
+});
+
 export type CreateRazorpayPaymentInput = z.infer<typeof createRazorpayPaymentSchema>;
 export type ConfirmRazorpayPaymentInput = z.infer<typeof confirmRazorpayPaymentSchema>;
+export type CancelRazorpayPaymentInput = z.infer<typeof cancelRazorpayPaymentSchema>;
